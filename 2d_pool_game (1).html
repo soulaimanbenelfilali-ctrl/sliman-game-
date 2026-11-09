@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>3D 8-Ball Pool</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #111827; /* Tailwind gray-900 */
+            touch-action: none; /* Prevent browser touch actions like pinch-zoom */
+            font-family: 'Inter', sans-serif;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        #game-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            width: 100vw;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+        #canvas-wrapper {
+            position: relative;
+            background: #4a2c11; /* Dark Wood rim color */
+            padding: 18px;
+            border-radius: 16px;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.6), inset 0 0 10px rgba(0,0,0,0.5);
+            max-width: 100%;
+        }
+        /* Corner details for the wooden frame */
+        #canvas-wrapper::before, #canvas-wrapper::after {
+            content: '';
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: rgba(0,0,0,0.3);
+        }
+        #canvas-wrapper::before { top: 10px; left: 10px; }
+        #canvas-wrapper::after { bottom: 10px; right: 10px; }
+        
+        canvas {
+            background-color: #0b6635; /* Classic pool table green */
+            display: block;
+            border-radius: 8px;
+            box-shadow: inset 0 0 30px rgba(0,0,0,0.7); /* Inner shadow for table depth */
+        }
+    </style>
+</head>
+<body class="text-white">
+
+    <div id="game-container">
+        <!-- UI Header -->
+        <div class="w-full max-w-4xl flex justify-between items-center mb-4 px-4">
+            <div>
+                <h1 class="text-2xl md:text-4xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-yellow-400 to-orange-500 tracking-wide drop-shadow-md">
+                    PRO 8-BALL
+                </h1>
+                <p class="text-xs md:text-sm text-gray-400 mt-1">Drag anywhere to aim & shoot</p>
+            </div>
+            <div class="text-right">
+                <div class="text-lg md:text-2xl font-bold bg-gray-800 px-4 py-1 rounded-lg border border-gray-700 shadow-inner">
+                    Potted: <span id="score" class="text-green-400">0</span>/15
+                </div>
+                <button id="reset-btn" class="mt-2 bg-gradient-to-b from-red-500 to-red-700 hover:from-red-400 hover:to-red-600 text-white font-bold py-1.5 px-5 rounded-full shadow-lg transition-transform transform hover:scale-105 active:scale-95 text-sm">
+                    New Game
+                </button>
+            </div>
+        </div>
+
+        <!-- Game Board -->
+        <div id="canvas-wrapper">
+            <canvas id="poolTable"></canvas>
+        </div>
+        
+        <!-- Game Over / Win Message -->
+        <div id="message-box" class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-gray-900 bg-opacity-95 p-8 rounded-2xl shadow-2xl border-2 border-yellow-500 hidden text-center z-50 backdrop-blur-sm">
+            <h2 id="message-title" class="text-4xl font-black mb-2 text-yellow-400">You Win!</h2>
+            <p id="message-subtitle" class="text-gray-300 mb-6 text-lg">Table cleared perfectly.</p>
+            <button onclick="resetGame()" class="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-400 hover:to-emerald-500 text-white font-bold py-3 px-8 rounded-full shadow-lg transform transition hover:scale-105 text-lg">
+                Play Again
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('poolTable');
+        const ctx = canvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+        const messageBox = document.getElementById('message-box');
+        
+        // Game Constants & Variables
+        let TABLE_WIDTH = 800;
+        let TABLE_HEIGHT = 400;
+        let BALL_RADIUS = 13;
+        let POCKET_RADIUS = 22;
+        const FRICTION = 0.988; // Smooth deceleration
+        const MAX_POWER = 35;   // Faster max break speed
+        
+        let balls = [];
+        let score = 0;
+        let isAiming = false;
+        let dragStart = { x: 0, y: 0 };
+        let dragCurrent = { x: 0, y: 0 };
+        let pockets = [];
+
+        // Dynamic resizing for responsive cross-platform play
+        function resizeCanvas() {
+            const wrapper = document.getElementById('canvas-wrapper');
+            const maxWidth = window.innerWidth - 50; 
+            const maxHeight = window.innerHeight - 180; 
+            
+            // Maintain strictly 2:1 aspect ratio
+            let newWidth = maxWidth;
+            let newHeight = newWidth / 2;
+            
+            if (newHeight > maxHeight) {
+                newHeight = maxHeight;
+                newWidth = newHeight * 2;
+            }
+            
+            canvas.width = newWidth;
+            canvas.height = newHeight;
+            
+            TABLE_WIDTH = newWidth;
+            TABLE_HEIGHT = newHeight;
+            // Adjust ball size relative to table
+            BALL_RADIUS = Math.max(7, Math.min(18, newWidth * 0.016));
+            POCKET_RADIUS = BALL_RADIUS * 1.7;
+
+            initPockets();
+        }
+
+        // --- Ball Class (Now with 3D Gradients & Numbers) ---
+        class Ball {
+            constructor(x, y, color, number, isCue = false) {
+                this.x = x;
+                this.y = y;
+                this.vx = 0;
+                this.vy = 0;
+                this.radius = BALL_RADIUS;
+                this.color = color;
+                this.number = number;
+                this.isCue = isCue;
+                this.mass = 1;
+                this.active = true;
+            }
+
+            draw() {
+                if (!this.active) return;
+                
+                // Draw Shadow for 3D depth
+                ctx.beginPath();
+                ctx.arc(this.x + 2, this.y + 3, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+                ctx.fill();
+
+                // Create 3D Radial Gradient
+                // Highlight is slightly offset to top-left
+                let grad = ctx.createRadialGradient(
+                    this.x - this.radius * 0.3, 
+                    this.y - this.radius * 0.3, 
+                    this.radius * 0.1, 
+                    this.x, 
+                    this.y, 
+                    this.radius
+                );
+                grad.addColorStop(0, '#ffffff'); // Glare
+                grad.addColorStop(0.3, this.color); // Main Color
+                grad.addColorStop(1, '#000000'); // Shadow edge
+
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = grad;
+                ctx.fill();
+                
+                // Draw Number if it's not the cue ball
+                if (!this.isCue) {
+                    // White circle
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.radius * 0.55, 0, Math.PI * 2);
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fill();
+
+                    // Number text
+                    ctx.fillStyle = '#000000';
+                    ctx.font = `bold ${this.radius * 0.7}px Inter, sans-serif`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    // Minor vertical adjustment for perfection
+                    ctx.fillText(this.number, this.x, this.y + this.radius * 0.05);
+                }
+            }
+
+            update() {
+                if (!this.active) return;
+
+                // Apply velocity
+                this.x += this.vx;
+                this.y += this.vy;
+
+                // Apply friction
+                this.vx *= FRICTION;
+                this.vy *= FRICTION;
+
+                // Stop completely to prevent CPU drain on micro-movements
+                if (Math.abs(this.vx) < 0.02) this.vx = 0;
+                if (Math.abs(this.vy) < 0.02) this.vy = 0;
+
+                // Wall Collisions (Perfect bouncing)
+                if (this.x - this.radius < 0) {
+                    this.x = this.radius;
+                    this.vx *= -1;
+                } else if (this.x + this.radius > TABLE_WIDTH) {
+                    this.x = TABLE_WIDTH - this.radius;
+                    this.vx *= -1;
+                }
+
+                if (this.y - this.radius < 0) {
+                    this.y = this.radius;
+                    this.vy *= -1;
+                } else if (this.y + this.radius > TABLE_HEIGHT) {
+                    this.y = TABLE_HEIGHT - this.radius;
+                    this.vy *= -1;
+                }
+            }
+        }
+
+        function initPockets() {
+            // Standard 6 pockets
+            pockets = [
+                { x: 0, y: 0 },
+                { x: TABLE_WIDTH / 2, y: 0 },
+                { x: TABLE_WIDTH, y: 0 },
+                { x: 0, y: TABLE_HEIGHT },
+                { x: TABLE_WIDTH / 2, y: TABLE_HEIGHT },
+                { x: TABLE_WIDTH, y: TABLE_HEIGHT }
+            ];
+        }
+
+        function drawTableDetails() {
+            // Draw pocket holes
+            ctx.fillStyle = '#0a0a0a';
+            pockets.forEach(p => {
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, POCKET_RADIUS, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Pocket inner shadow/ring
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, POCKET_RADIUS * 0.8, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            });
+
+            // Draw head string (starting line)
+            ctx.beginPath();
+            ctx.moveTo(TABLE_WIDTH * 0.25, 0);
+            ctx.lineTo(TABLE_WIDTH * 0.25, TABLE_HEIGHT);
+            ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            
+            // Draw head spot
+            ctx.beginPath();
+            ctx.arc(TABLE_WIDTH * 0.25, TABLE_HEIGHT / 2, 3, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255,255,255,0.3)';
+            ctx.fill();
+            
+            // Draw foot spot
+            ctx.beginPath();
+            ctx.arc(TABLE_WIDTH * 0.75, TABLE_HEIGHT / 2, 3, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255,255,255,0.3)';
+            ctx.fill();
+        }
+
+        // Standard Billiard Colors
+        const poolColors = {
+            1: '#facc15', // Yellow
+            2: '#2563eb', // Blue
+            3: '#dc2626', // Red
+            4: '#7e22ce', // Purple
+            5: '#ea580c', // Orange
+            6: '#16a34a', // Green
+            7: '#7f1d1d', // Maroon
+            8: '#111111', // Black
+            9: '#facc15', // Yellow 
+            10: '#2563eb',// Blue
+            11: '#dc2626',// Red
+            12: '#7e22ce',// Purple
+            13: '#ea580c',// Orange
+            14: '#16a34a',// Green
+            15: '#7f1d1d' // Maroon
+        };
+
+        function setupBalls() {
+            balls = [];
+            // Cue ball
+            balls.push(new Ball(TABLE_WIDTH * 0.25, TABLE_HEIGHT / 2, '#ffffff', 0, true));
+
+            // Setup proper 8-ball Triangle
+            let startX = TABLE_WIDTH * 0.70;
+            let startY = TABLE_HEIGHT / 2;
+            let spacing = BALL_RADIUS * 2.05; // Tight packing
+            
+            // Official-ish random rack, but 8-ball must be in middle of 3rd row
+            const ballOrder = [1, 9, 2, 10, 8, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15];
+            let index = 0;
+
+            for (let row = 0; row < 5; row++) {
+                for (let col = 0; col <= row; col++) {
+                    let bx = startX + row * (spacing * 0.866); // cos(30)
+                    let by = startY - (row * spacing) / 2 + (col * spacing);
+                    
+                    let num = ballOrder[index];
+                    balls.push(new Ball(bx, by, poolColors[num], num));
+                    index++;
+                }
+            }
+        }
+
+        // --- Physics Engine: Elastic Collisions ---
+        function handleCollisions() {
+            for (let i = 0; i < balls.length; i++) {
+                if (!balls[i].active) continue;
+                
+                for (let j = i + 1; j < balls.length; j++) {
+                    if (!balls[j].active) continue;
+                    resolveCollision(balls[i], balls[j]);
+                }
+                checkPockets(balls[i]);
+            }
+        }
+
+        function resolveCollision(b1, b2) {
+            let dx = b2.x - b1.x;
+            let dy = b2.y - b1.y;
+            let distance = Math.sqrt(dx * dx + dy * dy);
+
+            // Check overlap
+            if (distance < b1.radius + b2.radius) {
+                if (distance === 0) distance = 0.01;
+
+                let nx = dx / distance;
+                let ny = dy / distance;
+
+                let dvx = b1.vx - b2.vx;
+                let dvy = b1.vy - b2.vy;
+
+                let velocityAlongNormal = dvx * nx + dvy * ny;
+
+                // Do not resolve if separating
+                if (velocityAlongNormal > 0) return;
+
+                // Restitution (elasticity) - 1.0 is perfectly elastic
+                let restitution = 0.98; 
+
+                let impulse = -(1 + restitution) * velocityAlongNormal;
+                impulse /= (1 / b1.mass + 1 / b2.mass);
+
+                let impulseX = impulse * nx;
+                let impulseY = impulse * ny;
+
+                b1.vx += impulseX / b1.mass;
+                b1.vy += impulseY / b1.mass;
+                b2.vx -= impulseX / b2.mass;
+                b2.vy -= impulseY / b2.mass;
+
+                // Positional correction to prevent sinking/sticking
+                let overlap = (b1.radius + b2.radius) - distance;
+                let percent = 0.5; // push equally
+                let correctionX = (overlap * percent * nx);
+                let correctionY = (overlap * percent * ny);
+                
+                b1.x -= correctionX;
+                b1.y -= correctionY;
+                b2.x += correctionX;
+                b2.y += correctionY;
+            }
+        }
+
+        function checkPockets(ball) {
+            for (let p of pockets) {
+                let dx = ball.x - p.x;
+                let dy = ball.y - p.y;
+                let dist = Math.sqrt(dx * dx + dy * dy);
+
+                // Forgiving pocket detection
+                if (dist < POCKET_RADIUS * 0.8) {
+                    if (ball.isCue) {
+                        // Scratch!
+                        ball.vx = 0;
+                        ball.vy = 0;
+                        ball.x = TABLE_WIDTH * 0.25;
+                        ball.y = TABLE_HEIGHT / 2;
+                        // Brief flash effect on canvas
+                        canvas.style.opacity = '0.5';
+                        setTimeout(() => canvas.style.opacity = '1', 150);
+                    } else {
+                        // Potted!
+                        ball.active = false;
+                        score++;
+                        scoreElement.innerText = score;
+                        checkWinCondition();
+                    }
+                    break;
+                }
+            }
+        }
+
+        function checkWinCondition() {
+            const remaining = balls.filter(b => !b.isCue && b.active).length;
+            if (remaining === 0) {
+                messageBox.classList.remove('hidden');
+            }
+        }
+
+        // --- Interaction & Aiming UI ---
+        function drawAim() {
+            const cueBall = balls.find(b => b.isCue);
+            if (!isAiming || !cueBall || !cueBall.active) return;
+
+            let dx = dragStart.x - dragCurrent.x;
+            let dy = dragStart.y - dragCurrent.y;
+            
+            let pullDist = Math.sqrt(dx*dx + dy*dy);
+            if(pullDist < 5) return; // Deadzone
+
+            // Draw Trajectory line
+            ctx.beginPath();
+            ctx.moveTo(cueBall.x, cueBall.y);
+            // Project line based on pull distance
+            ctx.lineTo(cueBall.x + dx * 3, cueBall.y + dy * 3);
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([8, 8]);
+            ctx.stroke();
+            ctx.setLineDash([]); 
+
+            // Draw Cue stick
+            let nx = dx / pullDist;
+            let ny = dy / pullDist;
+            
+            // Stick pulls back based on drag distance
+            let offset = BALL_RADIUS + 10 + Math.min(pullDist * 0.3, 50);
+            
+            let stickStartX = cueBall.x - nx * offset;
+            let stickStartY = cueBall.y - ny * offset;
+            let stickLength = 150 + Math.min(pullDist * 0.1, 30);
+            let stickEndX = stickStartX - nx * stickLength;
+            let stickEndY = stickStartY - ny * stickLength;
+
+            // Cue shadow
+            ctx.beginPath();
+            ctx.moveTo(stickStartX + 5, stickStartY + 5);
+            ctx.lineTo(stickEndX + 5, stickEndY + 5);
+            ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+            ctx.lineWidth = 7;
+            ctx.lineCap = 'round';
+            ctx.stroke();
+
+            // Cue Stick Main body
+            let cueGrad = ctx.createLinearGradient(stickStartX, stickStartY, stickEndX, stickEndY);
+            cueGrad.addColorStop(0, '#e2e8f0'); // Tip
+            cueGrad.addColorStop(0.1, '#8B4513'); // Wood start
+            cueGrad.addColorStop(1, '#3e1a04'); // Handle dark wood
+
+            ctx.beginPath();
+            ctx.moveTo(stickStartX, stickStartY);
+            ctx.lineTo(stickEndX, stickEndY);
+            ctx.strokeStyle = cueGrad;
+            ctx.lineWidth = 6;
+            ctx.lineCap = 'round';
+            ctx.stroke();
+        }
+
+        // Control Handling (Cross-Platform)
+        function getMousePos(e) {
+            const rect = canvas.getBoundingClientRect();
+            // Ensure proper scaling if canvas display size differs from internal size
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            
+            return {
+                x: (clientX - rect.left) * scaleX,
+                y: (clientY - rect.top) * scaleY
+            };
+        }
+
+        function isBallsMoving() {
+            return balls.some(b => b.active && (Math.abs(b.vx) > 0.05 || Math.abs(b.vy) > 0.05));
+        }
+
+        function startDrag(e) {
+            // Allow dragging only if balls are stopped
+            if (isBallsMoving()) return;
+            
+            isAiming = true;
+            const pos = getMousePos(e);
+            dragStart = pos;
+            dragCurrent = pos;
+        }
+
+        function doDrag(e) {
+            if (!isAiming) return;
+            dragCurrent = getMousePos(e);
+        }
+
+        function endDrag(e) {
+            if (!isAiming) return;
+            isAiming = false;
+
+            const cueBall = balls.find(b => b.isCue);
+            if (!cueBall) return;
+
+            let dx = dragStart.x - dragCurrent.x;
+            let dy = dragStart.y - dragCurrent.y;
+            
+            // Apply Power
+            let powerMultiplier = 0.18; 
+            cueBall.vx = dx * powerMultiplier;
+            cueBall.vy = dy * powerMultiplier;
+
+            // Clamp max speed to prevent physics breaking
+            let speed = Math.sqrt(cueBall.vx**2 + cueBall.vy**2);
+            if (speed > MAX_POWER) {
+                let ratio = MAX_POWER / speed;
+                cueBall.vx *= ratio;
+                cueBall.vy *= ratio;
+            }
+        }
+
+        // Desktop
+        canvas.addEventListener('mousedown', startDrag);
+        window.addEventListener('mousemove', doDrag);
+        window.addEventListener('mouseup', endDrag);
+
+        // Mobile
+        canvas.addEventListener('touchstart', (e) => {
+            if(e.cancelable) e.preventDefault();
+            startDrag(e);
+        }, {passive: false});
+        
+        window.addEventListener('touchmove', (e) => {
+            if(isAiming && e.cancelable) e.preventDefault();
+            doDrag(e);
+        }, {passive: false});
+        
+        window.addEventListener('touchend', endDrag);
+
+        // Game Flow
+        function resetGame() {
+            score = 0;
+            scoreElement.innerText = score;
+            messageBox.classList.add('hidden');
+            setupBalls();
+        }
+        
+        document.getElementById('reset-btn').addEventListener('click', resetGame);
+        
+        window.addEventListener('resize', () => {
+            resizeCanvas();
+            // Re-rack if balls fall out of bounds due to resize
+            if(balls.length === 0 || balls[0].x > TABLE_WIDTH) resetGame();
+        });
+
+        // Loop
+        function gameLoop() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            drawTableDetails();
+
+            balls.forEach(ball => ball.update());
+            
+            // Multiple physics steps for high-speed accuracy
+            handleCollisions();
+
+            // Draw balls sorted by Y for slight depth faux-isometric feel
+            let sortedBalls = [...balls].sort((a,b) => a.y - b.y);
+            sortedBalls.forEach(ball => ball.draw());
+
+            drawAim();
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Init
+        window.onload = function() {
+            resizeCanvas();
+            resetGame();
+            gameLoop();
+        };
+
+    </script>
+</body>
+</html>
